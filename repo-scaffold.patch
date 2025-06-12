@@ -1,0 +1,428 @@
+diff --git a/migrations/20250521_schema.sql b/migrations/20250521_schema.sql
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/migrations/20250521_schema.sql
+@@ -0,0 +1,50 @@
++-- Dev Portal schema
++
++CREATE TABLE IF NOT EXISTS dev_projects (
++  id INT PRIMARY KEY AUTO_INCREMENT,
++  name VARCHAR(255) NOT NULL,
++  description TEXT,
++  status VARCHAR(50) DEFAULT 'active',
++  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
++  created_by INT NOT NULL,
++  FOREIGN KEY (created_by) REFERENCES users(id)
++);
++
++CREATE TABLE IF NOT EXISTS dev_tasks (
++  id INT PRIMARY KEY AUTO_INCREMENT,
++  dev_project_id INT NOT NULL,
++  title VARCHAR(255) NOT NULL,
++  description TEXT,
++  status VARCHAR(50) DEFAULT 'todo',
++  created_by INT NOT NULL,
++  assigned_to INT,
++  due_date DATE,
++  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
++  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
++  FOREIGN KEY (dev_project_id) REFERENCES dev_projects(id) ON DELETE CASCADE,
++  FOREIGN KEY (created_by) REFERENCES users(id),
++  FOREIGN KEY (assigned_to) REFERENCES users(id)
++);
++
++CREATE TABLE IF NOT EXISTS messages (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  room_id BIGINT DEFAULT 1,
++  user VARCHAR(80),
++  body TEXT,
++  s3_key VARCHAR(256),
++  content_type VARCHAR(80),
++  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
++);
++
++CREATE TABLE IF NOT EXISTS embeddings (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  doc_title VARCHAR(200),
++  chunk_no INT,
++  txt TEXT,
++  vec VECTOR(1536) NOT NULL,
++  INDEX vss_idx (vec) USING VSS
++);
+diff --git a/lib/db.js b/lib/db.js
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/lib/db.js
+@@ -0,0 +1,3 @@
++import mysql from 'mysql2/promise';
++export default mysql.createPool(process.env.DATABASE_URL + '?multipleStatements=true');
++
+diff --git a/lib/auth.js b/lib/auth.js
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/lib/auth.js
+@@ -0,0 +1,18 @@
++import bcrypt from 'bcryptjs';
++import jwt from 'jsonwebtoken';
++import { parse } from 'cookie';
++
++const SECRET = process.env.JWT_SECRET;
++export const hashPassword = p => bcrypt.hash(p,10);
++export const verifyPassword = (p,h) => bcrypt.compare(p,h);
++export const signToken = payload => jwt.sign(payload,SECRET,{expiresIn:'8h'});
++export const verifyToken = token => jwt.verify(token,SECRET);
++
++export function getTokenFromReq(req){
++  const cookies = parse(req.headers.cookie||'');
++  if(!cookies.auth_token) return null;
++  try{ return verifyToken(cookies.auth_token) }
++  catch{return null}
++}
++
+diff --git a/components/Sidebar.js b/components/Sidebar.js
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/components/Sidebar.js
+@@ -0,0 +1,9 @@
++export function Sidebar() {
++  return (
++    <nav className="w-64 bg-[var(--color-surface)] h-screen p-4 space-y-2">
++      <a href="/" className="block font-bold mb-4">Garage Vision</a>
++      <a href="/dev/projects" className="block hover:underline">Dev → Projects</a>
++      <a href="/chat" className="block hover:underline">Dev → Chat</a>
++    </nav>
++  );
++}
+diff --git a/components/Header.js b/components/Header.js
+new file mode 100644
+index 0000000..5555555
+--- /dev/null
++++ b/components/Header.js
+@@ -0,0 +1,12 @@
++import { useEffect, useState } from 'react';
++export function Header() {
++  const [user, setUser] = useState(null);
++  useEffect(() => {
++    fetch('/api/auth/me',{credentials:'include'})
++      .then(r => r.json()).then(setUser).catch(()=>null);
++  }, []);
++  return (
++    <header className="bg-[var(--color-primary)] text-white p-4 flex justify-between">
++      <div>Dev Portal</div>
++      {user && <div>{user.username}</div>}
++    </header>
++  );
++}
+diff --git a/components/Card.js b/components/Card.js
+new file mode 100644
+index 0000000..6666666
+--- /dev/null
++++ b/components/Card.js
+@@ -0,0 +1,7 @@
++export function Card({ children, className = '' }) {
++  return (
++    <div className={\`p-4 bg-[var(--color-surface)] rounded-2xl shadow \${className}\`}>
++      {children}
++    </div>
++  );
++}
+diff --git a/pages/api/auth/login.js b/pages/api/auth/login.js
+new file mode 100644
+index 0000000..7777777
+--- /dev/null
++++ b/pages/api/auth/login.js
+@@ -0,0 +1,21 @@
++import pool from '../../../lib/db';
++import { verifyPassword, signToken } from '../../../lib/auth';
++
++export default async function handler(req, res) {
++  const { email, password } = req.body;
++  const [rows] = await pool.query(
++    'SELECT id,password_hash FROM users WHERE email=?',
++    [email]
++  );
++  if (!rows.length || !(await verifyPassword(password, rows[0].password_hash))) {
++    return res.status(401).json({ error: 'Invalid credentials' });
++  }
++  const token = signToken({ sub: rows[0].id });
++  res.setHeader(
++    'Set-Cookie',
++    \`auth_token=\${token}; HttpOnly; Path=/; Max-Age=28800; SameSite=Strict\`
++  );
++  res.status(200).json({ ok: true });
++}
+diff --git a/pages/api/auth/me.js b/pages/api/auth/me.js
+new file mode 100644
+index 0000000..8888888
+--- /dev/null
++++ b/pages/api/auth/me.js
+@@ -0,0 +1,13 @@
++import pool from '../../../lib/db';
++import { getTokenFromReq } from '../../../lib/auth';
++
++export default async function handler(req, res) {
++  const t = getTokenFromReq(req);
++  if (!t) return res.status(401).json({ error: 'Unauthorized' });
++  const [u] = await pool.query(
++    'SELECT id,username,email FROM users WHERE id=?',
++    [t.sub]
++  );
++  res.status(200).json(u[0]);
++}
+diff --git a/pages/api/socket-io.js b/pages/api/socket-io.js
+new file mode 100644
+index 0000000..9999999
+--- /dev/null
++++ b/pages/api/socket-io.js
+@@ -0,0 +1,28 @@
++import { Server } from 'socket.io';
++import pool from '../lib/db';
++
++export default function handler(req, res) {
++  if (!res.socket.server.io) {
++    const io = new Server(res.socket.server, { path: '/api/socket-io' });
++    io.on('connection', socket => {
++      socket.on('chat:send', async msg => {
++        await pool.execute(
++          'INSERT INTO messages (user,body,s3_key,content_type) VALUES (?,?,?,?)',
++          [msg.user, msg.body, msg.s3_key || null, msg.content_type || null]
++        );
++        io.emit('chat:recv', { ...msg, created_at: new Date().toISOString() });
++      });
++    });
++    res.socket.server.io = io;
++  }
++  res.end();
++}
+diff --git a/pages/api/dev/projects/index.js b/pages/api/dev/projects/index.js
+new file mode 100644
+index 0000000..aaaaaaaaa
+--- /dev/null
++++ b/pages/api/dev/projects/index.js
+@@ -0,0 +1,31 @@
++import pool from '../../../../lib/db';
++import { getTokenFromReq } from '../../../../lib/auth';
++
++export default async function handler(req, res) {
++  const t = getTokenFromReq(req);
++  if (!t) return res.status(401).json({ error: 'Unauthorized' });
++  const uid = t.sub;
++
++  if (req.method === 'GET') {
++    const [rows] = await pool.query(`
++      SELECT p.*, u.username AS creator
++        FROM dev_projects p
++        JOIN users u ON p.created_by = u.id
++       WHERE p.created_by=?
++       ORDER BY p.created_at DESC
++    `, [uid]);
++    return res.json(rows);
++  }
++
++  if (req.method === 'POST') {
++    const { name, description } = req.body;
++    if (!name) return res.status(400).json({ error: 'Missing name' });
++    const [{ insertId }] = await pool.query(
++      'INSERT INTO dev_projects (name,description,created_by) VALUES (?,?,?)',
++      [name, description || null, uid]
++    );
++    return res.status(201).json({ id: insertId });
++  }
++
++  res.setHeader('Allow', ['GET','POST']);
++  res.status(405).end();
++}
+diff --git a/pages/api/dev/projects/[id].js b/pages/api/dev/projects/[id].js
+new file mode 100644
+index 0000000..bbbbbbbbb
+--- /dev/null
++++ b/pages/api/dev/projects/[id].js
+@@ -0,0 +1,31 @@
++import pool from '../../../../lib/db';
++import { getTokenFromReq } from '../../../../lib/auth';
++
++export default async function handler(req, res) {
++  const t = getTokenFromReq(req);
++  if (!t) return res.status(401).json({ error: 'Unauthorized' });
++  const { id } = req.query;
++
++  if (req.method === 'GET') {
++    const [[p]] = await pool.query(`
++      SELECT p.*, u.username AS creator
++        FROM dev_projects p
++        JOIN users u ON p.created_by = u.id
++       WHERE p.id=?
++    `, [id]);
++    return p ? res.json(p) : res.status(404).json({ error: 'Not found' });
++  }
++
++  if (req.method === 'PUT') {
++    const { name, description, status } = req.body;
++    await pool.query(
++      'UPDATE dev_projects SET name=?,description=?,status=? WHERE id=?',
++      [name, description || null, status || 'active', id]
++    );
++    return res.json({ ok: true });
++  }
++
++  if (req.method === 'DELETE') {
++    await pool.query('DELETE FROM dev_projects WHERE id=?', [id]);
++    return res.json({ ok: true });
++  }
++
++  res.setHeader('Allow', ['GET','PUT','DELETE']);
++  res.status(405).end();
++}
+diff --git a/pages/api/dev/tasks/index.js b/pages/api/dev/tasks/index.js
+new file mode 100644
+index 0000000..ccccccccc
+--- /dev/null
++++ b/pages/api/dev/tasks/index.js
+@@ -0,0 +1,34 @@
++import pool from '../../../../lib/db';
++import { getTokenFromReq } from '../../../../lib/auth';
++
++export default async function handler(req, res) {
++  const t = getTokenFromReq(req);
++  if (!t) return res.status(401).json({ error: 'Unauthorized' });
++  const uid = t.sub, { project_id } = req.query;
++
++  if (req.method === 'GET') {
++    const [rows] = await pool.query(`
++      SELECT t.*, u.username AS assignee
++        FROM dev_tasks t
++   LEFT JOIN users u ON t.assigned_to = u.id
++       WHERE t.dev_project_id=? AND t.created_by=?
++    ORDER BY t.created_at DESC
++    `, [project_id, uid]);
++    return res.json(rows);
++  }
++
++  if (req.method === 'POST') {
++    const { title, description, status, assigned_to, due_date } = req.body;
++    const [{ insertId }] = await pool.query(`
++      INSERT INTO dev_tasks
++        (dev_project_id,title,description,status,created_by,assigned_to,due_date)
++      VALUES (?,?,?,?,?,?,?)
++    `, [project_id, title, description||null, status, uid, assigned_to||null, due_date||null]);
++    return res.status(201).json({ id: insertId });
++  }
++
++  res.setHeader('Allow', ['GET','POST']);
++  res.status(405).end();
++}
+diff --git a/pages/api/dev/tasks/[id].js b/pages/api/dev/tasks/[id].js
+new file mode 100644
+index 0000000..ddddddddd
+--- /dev/null
++++ b/pages/api/dev/tasks/[id].js
+@@ -0,0 +1,35 @@
++import pool from '../../../../lib/db';
++import { getTokenFromReq } from '../../../../lib/auth';
++
++export default async function handler(req, res) {
++  const t = getTokenFromReq(req);
++  if (!t) return res.status(401).json({ error: 'Unauthorized' });
++  const { id } = req.query;
++
++  if (req.method === 'GET') {
++    const [[r]] = await pool.query(`
++      SELECT t.*, u.username AS assignee
++        FROM dev_tasks t
++   LEFT JOIN users u ON t.assigned_to = u.id
++       WHERE t.id=?
++    `, [id]);
++    return r ? res.json(r) : res.status(404).json({ error: 'Not found' });
++  }
++
++  if (req.method === 'PUT') {
++    const { title, description, status, assigned_to, due_date } = req.body;
++    await pool.query(`
++      UPDATE dev_tasks
++      SET title=?,description=?,status=?,assigned_to=?,due_date=?
++      WHERE id=?
++    `, [title, description||null, status, assigned_to||null, due_date||null, id]);
++    return res.json({ ok: true });
++  }
++
++  if (req.method === 'DELETE') {
++    await pool.query('DELETE FROM dev_tasks WHERE id=?', [id]);
++    return res.json({ ok: true });
++  }
++
++  res.setHeader('Allow', ['GET','PUT','DELETE']);
++  res.status(405).end();
++}
+diff --git a/pages/dev/projects/index.js b/pages/dev/projects/index.js
+new file mode 100644
+index 0000000..eeeeeeeee
+--- /dev/null
++++ b/pages/dev/projects/index.js
+@@ -0,0 +1,27 @@
++import Link from 'next/link';
++import { useState, useEffect } from 'react';
++import { Sidebar } from '../../components/Sidebar';
++import { Header } from '../../components/Header';
++import { Card } from '../../components/Card';
++
++export default function Projects() {
++  const [projects, setProjects] = useState([]);
++  useEffect(() => {
++    fetch('/api/dev/projects',{credentials:'include'})
++      .then(r => r.json()).then(setProjects);
++  }, []);
++
++  return (
++    <div className="flex">
++      <Sidebar />
++      <div className="flex-1">
++        <Header />
++        <main className="p-8">
++          <h1 className="text-3xl mb-4">Projects</h1>
++          <Link href="/dev/projects/new"><a className="button">+ New Project</a></Link>
++          <div className="mt-4 space-y-4">
++            {projects.map(p => (
++              <Card key={p.id}>
++                <Link href={`/dev/projects/${p.id}`}><a>
++                  <h2 className="font-semibold">{p.name}</h2>
++                  <p className="text-sm">{p.description}</p>
++                </a></Link>
++              </Card>
++            ))}
++          </div>
++        </main>
++      </div>
++    </div>
++  );
++}
+diff --git a/package.json b/package.json
+new file mode 100644
+index 0000000..ffffffffff
+--- /dev/null
++++ b/package.json
+@@ -0,0 +1,26 @@
++{
++  "name": "garage-vision-portal",
++  "version": "0.0.1",
++  "scripts": {
++    "dev": "next dev",
++    "build": "next build",
++    "start": "next start",
++    "migrate": "mysql --url=\"$DATABASE_URL\" < migrations/20250521_schema.sql"
++  },
++  "dependencies": {
++    "next": "15.3.2",
++    "react": "latest",
++    "react-dom": "latest",
++    "mysql2": "^3.2.0",
++    "cookie": "^0.5.0",
++    "bcryptjs": "^2.4.3",
++    "jsonwebtoken": "^9.0.0",
++    "socket.io": "^4.9.1"
++  }
++}

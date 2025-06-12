@@ -1,0 +1,20 @@
+{
+  "name": "garage-vision-portal",
+  "version": "0.0.1",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "migrate": "mysql --url=\"$DATABASE_URL\" < migrations/20250521_schema.sql"
+  },
+  "dependencies": {
+    "next": "15.3.2",
+    "react": "latest",
+    "react-dom": "latest",
+    "mysql2": "^3.2.0",
+    "cookie": "^0.5.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.0",
+    "socket.io": "^4.9.1"
+  }
+}
